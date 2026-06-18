@@ -35,7 +35,7 @@ unit-test:
 	$(MAKE) -C tests unit
 
 test: all unit-test
-	tests/integration_test.py ./$(BIN)
+	python3 tests/integration_test.py ./$(BIN)
 
 clean:
 	rm -rf $(BUILD_DIR)

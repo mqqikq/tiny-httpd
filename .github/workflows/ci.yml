@@ -18,13 +18,13 @@ jobs:
         run: make unit-test
 
       - name: Integration tests
-        run: tests/integration_test.py ./build/httpd
+        run: python3 tests/integration_test.py ./build/httpd
 
       - name: Build with ASan + UBSan
         run: make asan
 
       - name: Integration tests under ASan + UBSan
-        run: tests/integration_test.py ./build/httpd
+        run: python3 tests/integration_test.py ./build/httpd
 
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
