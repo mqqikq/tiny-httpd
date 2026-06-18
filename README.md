@@ -1,6 +1,6 @@
 # tiny-httpd
 
-[![CI](https://github.com/lelu/tiny-httpd/actions/workflows/ci.yml/badge.svg)](https://github.com/lelu/tiny-httpd/actions/workflows/ci.yml)
+[![CI](https://github.com/mqqikq/tiny-httpd/actions/workflows/ci.yml/badge.svg)](https://github.com/mqqikq/tiny-httpd/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A static-file HTTP/1.1 server written from scratch in C. No libevent, no
