@@ -29,14 +29,5 @@ jobs:
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
 
-      - name: valgrind (memory + fd leak check across several requests)
-        run: |
-          make clean
-          make
-          valgrind --error-exitcode=1 --leak-check=full --track-fds=yes \
-            ./build/httpd -p 8098 -r www &
-          VALGRIND_PID=$!
-          sleep 1
-          for i in $(seq 1 5); do curl -sS -o /dev/null http://127.0.0.1:8098/; done
-          kill -INT $VALGRIND_PID
-          wait $VALGRIND_PID
+      - name: valgrind (memory + fd leak check, incl. keep-alive and idle timeout)
+        run: bash tests/valgrind_check.sh
