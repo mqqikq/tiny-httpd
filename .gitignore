@@ -1,0 +1,9 @@
+build/
+*.o
+*.out
+*.dSYM/
+core
+vgcore.*
+*.log
+__pycache__/
+*.pyc
