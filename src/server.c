@@ -22,6 +22,16 @@ int server_listen(int port, int backlog) {
         return -1;
     }
 
+    /* Lets several worker processes each bind their own socket to the same
+     * port; the kernel load-balances incoming connections across them.
+     * Harmless with a single worker too. */
+    int reuseport = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuseport, sizeof(reuseport)) < 0) {
+        perror("setsockopt(SO_REUSEPORT)");
+        close(fd);
+        return -1;
+    }
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;

@@ -1,7 +1,7 @@
 CC      ?= gcc
 CSTD    := -std=c11
 WARN    := -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
-CFLAGS  ?= $(CSTD) $(WARN) -O2 -g -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
+CFLAGS  ?= $(CSTD) $(WARN) -O2 -g -D_GNU_SOURCE
 LDFLAGS ?=
 
 SRC_DIR   := src
