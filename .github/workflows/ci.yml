@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (strict warnings)
+        run: make
+
+      - name: Unit tests
+        run: make unit-test
+
+      - name: Integration tests
+        run: tests/integration_test.py ./build/httpd
+
+      - name: Build with ASan + UBSan
+        run: make asan
+
+      - name: Integration tests under ASan + UBSan
+        run: tests/integration_test.py ./build/httpd
+
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: valgrind (memory + fd leak check across several requests)
+        run: |
+          make clean
+          make
+          valgrind --error-exitcode=1 --leak-check=full --track-fds=yes \
+            ./build/httpd -p 8098 -r www &
+          VALGRIND_PID=$!
+          sleep 1
+          for i in $(seq 1 5); do curl -sS -o /dev/null http://127.0.0.1:8098/; done
+          kill -INT $VALGRIND_PID
+          wait $VALGRIND_PID
