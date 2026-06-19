@@ -19,4 +19,9 @@ int http_build_headers(char *out, size_t out_size, int status_code,
  * Returns the number of bytes written, or -1 if out_size was too small. */
 int http_build_error_body(char *out, size_t out_size, int status_code);
 
+/* Renders the response head for a Server-Sent Events stream: 200 OK with
+ * Content-Type: text/event-stream and no Content-Length (the body is an
+ * indefinite stream of "data: ...\n\n" frames pushed later). */
+int http_build_sse_headers(char *out, size_t out_size);
+
 #endif /* HTTP_RESPONSE_H */

@@ -13,6 +13,7 @@
 #include "files.h"
 #include "http_parser.h"
 #include "http_response.h"
+#include "metrics.h"
 #include "mime.h"
 
 static void log_state(const server_config_t *cfg, const char *state, const char *detail) {
@@ -33,6 +34,7 @@ static void log_access(const connection_t *conn, const char *method, const char 
     printf("%s - - [%s] \"%s %s %s\" %d %ld\n",
            conn->client_ip[0] != '\0' ? conn->client_ip : "-", date_buf, method, path, version,
            status, content_length);
+    metrics_on_request(content_length);
 }
 
 connection_t *connection_create(int fd, const char *client_ip) {
@@ -67,6 +69,7 @@ void connection_reset_for_next_request(connection_t *conn) {
     conn->file_remaining = 0;
     conn->keep_alive = 0;
     conn->is_head = 0;
+    conn->is_sse = 0;
 }
 
 /* Builds an error response (headers + optional plain-text body) into
@@ -124,10 +127,53 @@ static void handle_parsed_request(connection_t *conn, const server_config_t *cfg
         return;
     }
 
+    if (strcmp(req->path, "/metrics") == 0) {
+        char json[512];
+        int json_len = metrics_format_json(json, sizeof(json));
+        if (json_len < 0) json_len = 0;
+        int header_len = http_build_headers(conn->wbuf, sizeof(conn->wbuf), 200,
+                                             "application/json", json_len, keep_alive);
+        if (header_len < 0) {
+            int body_len = build_error_response(conn, 500, 1, 0);
+            log_access(conn, req->method, req->path, req->version, 500, body_len);
+            return;
+        }
+        conn->wlen = (size_t)header_len;
+        if (!is_head && json_len > 0 && conn->wlen + (size_t)json_len <= sizeof(conn->wbuf)) {
+            memcpy(conn->wbuf + conn->wlen, json, (size_t)json_len);
+            conn->wlen += (size_t)json_len;
+        }
+        conn->wsent = 0;
+        conn->keep_alive = keep_alive;
+        conn->state = CONN_STATE_WRITING;
+        log_access(conn, req->method, req->path, req->version, 200, json_len);
+        return;
+    }
+
+    if (is_get && strcmp(req->path, "/metrics/stream") == 0) {
+        int header_len = http_build_sse_headers(conn->wbuf, sizeof(conn->wbuf));
+        if (header_len < 0) {
+            int body_len = build_error_response(conn, 500, 1, 0);
+            log_access(conn, req->method, req->path, req->version, 500, body_len);
+            return;
+        }
+        conn->wlen = (size_t)header_len;
+        conn->wsent = 0;
+        conn->is_sse = 1;
+        conn->keep_alive = 1;
+        conn->state = CONN_STATE_WRITING;
+        log_access(conn, req->method, req->path, req->version, 200, 0);
+        return;
+    }
+
+    /* /dashboard is just an alias for the static dashboard.html shipped in
+     * the document root -- no special-casing needed past the path swap. */
+    const char *serve_path = strcmp(req->path, "/dashboard") == 0 ? "/dashboard.html" : req->path;
+
     char fullpath[4096];
     struct stat st;
     file_resolve_result_t resolved =
-        resolve_path(cfg->doc_root, req->path, fullpath, sizeof(fullpath), &st);
+        resolve_path(cfg->doc_root, serve_path, fullpath, sizeof(fullpath), &st);
 
     switch (resolved) {
         case FILE_RESOLVE_OK: {
@@ -267,5 +313,21 @@ conn_io_result_t connection_on_writable(connection_t *conn, const server_config_
         close(conn->file_fd);
         conn->file_fd = -1;
     }
+    if (conn->is_sse) {
+        /* Stays open indefinitely; the next frame is pushed by the sweep
+         * tick in main.c, not by another epoll-driven write. */
+        return CONN_IO_SSE_ACTIVE;
+    }
     return conn->keep_alive ? CONN_IO_WANT_READ : CONN_IO_CLOSE;
+}
+
+conn_io_result_t connection_sse_push(connection_t *conn, const server_config_t *cfg,
+                                      const char *json, size_t json_len) {
+    int n = snprintf(conn->wbuf, sizeof(conn->wbuf), "data: %.*s\n\n", (int)json_len, json);
+    if (n < 0 || (size_t)n >= sizeof(conn->wbuf)) {
+        return CONN_IO_AGAIN; /* drop this frame; try again on the next tick */
+    }
+    conn->wlen = (size_t)n;
+    conn->wsent = 0;
+    return connection_on_writable(conn, cfg);
 }

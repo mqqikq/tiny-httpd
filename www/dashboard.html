@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>tiny-httpd — live dashboard</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    main.dashboard { max-width: 56rem; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+      gap: 0.75rem;
+      margin: 1.5rem 0;
+    }
+    .stat {
+      background: rgba(127, 127, 127, 0.08);
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+    }
+    .stat .value { font-size: 1.6rem; font-weight: 600; }
+    .stat .label { font-size: 0.8rem; opacity: 0.7; }
+    #status { font-size: 0.85rem; opacity: 0.7; }
+    #status.live::before { content: "● "; color: #16a34a; }
+    #status.down::before { content: "● "; color: #dc2626; }
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 0.4rem;
+      padding: 0.6rem 1.1rem;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: progress; }
+    canvas { background: rgba(127, 127, 127, 0.05); border-radius: 0.5rem; }
+  </style>
+</head>
+<body>
+  <main class="dashboard">
+    <h1>tiny-httpd dashboard</h1>
+    <p>
+      Live counters pushed over <a href="/metrics/stream">Server-Sent Events</a>
+      from this server process (pid <code id="pid">?</code>).
+      <span id="status">connecting…</span>
+    </p>
+
+    <div class="stats">
+      <div class="stat"><div class="value" id="v-active">–</div><div class="label">active connections</div></div>
+      <div class="stat"><div class="value" id="v-total-conn">–</div><div class="label">total connections</div></div>
+      <div class="stat"><div class="value" id="v-requests">–</div><div class="label">total requests</div></div>
+      <div class="stat"><div class="value" id="v-rps">–</div><div class="label">req/s (avg)</div></div>
+      <div class="stat"><div class="value" id="v-bytes">–</div><div class="label">bytes sent</div></div>
+      <div class="stat"><div class="value" id="v-uptime">–</div><div class="label">uptime (s)</div></div>
+    </div>
+
+    <p>
+      <button id="load-btn">Generate load (200 concurrent requests)</button>
+      <span id="load-status"></span>
+    </p>
+
+    <canvas id="chart" height="140"></canvas>
+
+    <p><a href="/">&larr; back</a></p>
+  </main>
+
+  <script>
+    const MAX_POINTS = 60;
+    const chart = new Chart(document.getElementById('chart').getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'active connections', data: [], borderColor: '#2563eb', tension: 0.2, yAxisID: 'y' },
+          { label: 'requests/s (instantaneous)', data: [], borderColor: '#16a34a', tension: 0.2, yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        animation: false,
+        scales: {
+          y: { beginAtZero: true, position: 'left', title: { display: true, text: 'connections' } },
+          y1: { beginAtZero: true, position: 'right', title: { display: true, text: 'req/s' }, grid: { drawOnChartArea: false } },
+        },
+      },
+    });
+
+    let lastRequests = null;
+    let lastTs = null;
+
+    function fmtBytes(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    function onMetrics(m) {
+      document.getElementById('pid').textContent = m.pid;
+      document.getElementById('v-active').textContent = m.connections_active;
+      document.getElementById('v-total-conn').textContent = m.connections_total;
+      document.getElementById('v-requests').textContent = m.requests_total;
+      document.getElementById('v-rps').textContent = m.requests_per_sec_avg.toFixed(2);
+      document.getElementById('v-bytes').textContent = fmtBytes(m.bytes_sent_total);
+      document.getElementById('v-uptime').textContent = m.uptime_sec;
+
+      const now = Date.now();
+      let instRps = 0;
+      if (lastRequests !== null && lastTs !== null) {
+        const dt = (now - lastTs) / 1000;
+        instRps = dt > 0 ? (m.requests_total - lastRequests) / dt : 0;
+      }
+      lastRequests = m.requests_total;
+      lastTs = now;
+
+      const label = new Date(now).toLocaleTimeString();
+      chart.data.labels.push(label);
+      chart.data.datasets[0].data.push(m.connections_active);
+      chart.data.datasets[1].data.push(instRps);
+      if (chart.data.labels.length > MAX_POINTS) {
+        chart.data.labels.shift();
+        chart.data.datasets.forEach(d => d.data.shift());
+      }
+      chart.update();
+    }
+
+    function connect() {
+      const status = document.getElementById('status');
+      const es = new EventSource('/metrics/stream');
+      es.onopen = () => { status.textContent = 'live'; status.className = 'live'; };
+      es.onmessage = (e) => { try { onMetrics(JSON.parse(e.data)); } catch (err) { /* ignore a malformed frame */ } };
+      es.onerror = () => {
+        status.textContent = 'reconnecting…';
+        status.className = 'down';
+      };
+    }
+    connect();
+
+    document.getElementById('load-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('load-btn');
+      const out = document.getElementById('load-status');
+      const N = 200;
+      btn.disabled = true;
+      out.textContent = `firing ${N} requests…`;
+      const start = performance.now();
+      const results = await Promise.allSettled(
+        Array.from({ length: N }, () => fetch('/', { cache: 'no-store' }))
+      );
+      const ok = results.filter(r => r.status === 'fulfilled' && r.value.ok).length;
+      const elapsed = ((performance.now() - start) / 1000).toFixed(2);
+      out.textContent = `${ok}/${N} succeeded in ${elapsed}s`;
+      btn.disabled = false;
+    });
+  </script>
+</body>
+</html>

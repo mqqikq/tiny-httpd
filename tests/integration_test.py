@@ -13,6 +13,7 @@ guard as seen by a real attacker.
 Usage: integration_test.py [path-to-httpd-binary]
 """
 import http.client
+import json
 import os
 import shutil
 import socket
@@ -220,6 +221,60 @@ def run_tests(host, port):
     check(" 200 " in line, "HTTP/1.0 request without a Connection header still succeeds")
     check(b"Connection: keep-alive" not in resp_bytes, "HTTP/1.0 without explicit keep-alive is not kept alive")
 
+    print("test_metrics_endpoint")
+    conn = http.client.HTTPConnection(host, port, timeout=2)
+    conn.request("GET", "/")
+    conn.getresponse().read()
+    conn.close()
+    conn = http.client.HTTPConnection(host, port, timeout=2)
+    conn.request("GET", "/metrics")
+    resp = conn.getresponse()
+    body = resp.read()
+    conn.close()
+    check(resp.status == 200, "GET /metrics returns 200")
+    check(resp.getheader("Content-Type", "").startswith("application/json"),
+          "/metrics has application/json Content-Type")
+    metrics = json.loads(body)
+    check(metrics.get("requests_total", 0) >= 1, "metrics reflect at least the prior GET /")
+    check("connections_active" in metrics and "uptime_sec" in metrics and "pid" in metrics,
+          "metrics JSON has the expected fields")
+
+    print("test_dashboard_serves_html")
+    conn = http.client.HTTPConnection(host, port, timeout=2)
+    conn.request("GET", "/dashboard")
+    resp = conn.getresponse()
+    body = resp.read()
+    conn.close()
+    check(resp.status == 200, "GET /dashboard returns 200")
+    check(resp.getheader("Content-Type", "").startswith("text/html"), "/dashboard has text/html Content-Type")
+    check(b"metrics/stream" in body, "dashboard page wires up the SSE endpoint")
+
+    print("test_metrics_stream_sse")
+    with socket.create_connection((host, port), timeout=3) as s:
+        s.sendall(b"GET /metrics/stream HTTP/1.1\r\nHost: x\r\n\r\n")
+        s.settimeout(3)
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = s.recv(4096)
+            if not chunk:
+                raise ConnectionError("connection closed before SSE headers completed")
+            buf += chunk
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        check(b"200 OK" in head, "SSE stream responds 200 OK")
+        check(b"Content-Type: text/event-stream" in head, "SSE stream sets text/event-stream Content-Type")
+        check(b"Content-Length" not in head, "SSE stream has no Content-Length (indefinite body)")
+
+        # The server pushes one frame per second; wait for at least one.
+        while b"\n\n" not in rest:
+            chunk = s.recv(4096)
+            if not chunk:
+                raise ConnectionError("connection closed before any SSE frame arrived")
+            rest += chunk
+        frame, _, _ = rest.partition(b"\n\n")
+        check(frame.startswith(b"data: "), "SSE frame starts with 'data: '")
+        payload = json.loads(frame[len(b"data: "):])
+        check("requests_total" in payload, "SSE frame payload is the same metrics JSON shape")
+
     print("test_slow_client_does_not_block_other_connections")
     results = {}
 
@@ -341,6 +396,8 @@ def main():
             f.write("hello from sub")
         with open(os.path.join(docroot, "style.css"), "w") as f:
             f.write("body { color: red; }")
+        with open(os.path.join(docroot, "dashboard.html"), "w") as f:
+            f.write("<!doctype html><title>dashboard</title>EventSource('/metrics/stream')")
         with open(os.path.join(workspace, "secret.txt"), "w") as f:
             f.write("should never be served")
 

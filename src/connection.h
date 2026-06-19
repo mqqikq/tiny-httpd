@@ -40,14 +40,16 @@ typedef struct connection {
 
     int keep_alive;
     int is_head;
+    int is_sse;              /* GET /metrics/stream: long-lived, pushed by the sweep tick */
 
-    time_t last_active;     /* for idle-timeout sweeps */
+    time_t last_active;     /* for idle-timeout sweeps (ignored while is_sse) */
 } connection_t;
 
 typedef enum {
     CONN_IO_AGAIN,      /* not done; keep waiting on the same epoll interest */
     CONN_IO_WANT_WRITE,  /* request fully read and handled; switch to EPOLLOUT */
     CONN_IO_WANT_READ,   /* response fully sent, keep-alive; switch back to EPOLLIN */
+    CONN_IO_SSE_ACTIVE,  /* an SSE frame (header or push) fully drained; switch back to EPOLLIN */
     CONN_IO_CLOSE,       /* done (or unrecoverable error); close the connection */
 } conn_io_result_t;
 
@@ -68,5 +70,12 @@ conn_io_result_t connection_on_readable(connection_t *conn, const server_config_
 /* Call when epoll reports the fd as writable. Drains the header/body buffer
  * and streams any pending file body via sendfile(). */
 conn_io_result_t connection_on_writable(connection_t *conn, const server_config_t *cfg);
+
+/* Queues one SSE frame ("data: <json>\n\n") on an is_sse connection and
+ * attempts to send it immediately (non-blocking, same partial-write
+ * handling as connection_on_writable). Call only on a connection whose
+ * previous frame has fully drained (wsent == wlen). */
+conn_io_result_t connection_sse_push(connection_t *conn, const server_config_t *cfg,
+                                      const char *json, size_t json_len);
 
 #endif /* CONNECTION_H */

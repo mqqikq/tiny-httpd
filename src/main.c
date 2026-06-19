@@ -16,6 +16,7 @@
 
 #include "connection.h"
 #include "event_loop.h"
+#include "metrics.h"
 #include "server.h"
 
 #define DEFAULT_PORT 8080
@@ -62,6 +63,7 @@ static void drop_connection(event_loop_t *loop, connection_t **conns, int fd) {
     event_loop_del(loop, fd);
     connection_destroy(conns[fd]);
     conns[fd] = NULL;
+    metrics_on_connection_close();
 }
 
 /* Binds its own listening socket (SO_REUSEPORT lets several of these run on
@@ -69,6 +71,13 @@ static void drop_connection(event_loop_t *loop, connection_t **conns, int fd) {
  * This is the entire single-process server; -w workers just runs several
  * of these in parallel via fork(). */
 static int run_worker(int port, const char *doc_root, int verbose, int idle_timeout_sec) {
+    /* stdout is fully buffered (not line-buffered) when it isn't a TTY --
+     * e.g. under `docker logs` or any redirect -- which would otherwise
+     * delay the startup banner and every access-log line indefinitely. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
+    metrics_init();
+
     int listen_fd = server_listen(port, DEFAULT_BACKLOG);
     if (listen_fd < 0) {
         return 1;
@@ -154,6 +163,7 @@ static int run_worker(int port, const char *doc_root, int verbose, int idle_time
                         continue;
                     }
                     conns[client_fd] = conn;
+                    metrics_on_connection_open();
                     if (verbose) fprintf(stderr, "[conn] accept   fd=%d ip=%s\n", client_fd, ip_buf);
                 }
                 continue;
@@ -185,6 +195,15 @@ static int run_worker(int port, const char *doc_root, int verbose, int idle_time
                         drop_connection(loop, conns, fd);
                     }
                     break;
+                case CONN_IO_SSE_ACTIVE:
+                    /* Header (or a queued metrics frame) fully drained; go
+                     * back to waiting on EPOLLIN so we notice the client
+                     * disconnecting. The next push happens on the sweep
+                     * tick below, not in response to an epoll event. */
+                    if (event_loop_mod(loop, fd, EPOLLIN) < 0) {
+                        drop_connection(loop, conns, fd);
+                    }
+                    break;
                 case CONN_IO_CLOSE:
                     drop_connection(loop, conns, fd);
                     break;
@@ -194,9 +213,28 @@ static int run_worker(int port, const char *doc_root, int verbose, int idle_time
         time_t now = time(NULL);
         if (now != last_sweep) {
             last_sweep = now;
+            char metrics_json[512];
+            int metrics_len = -1; /* computed lazily, only if an SSE client exists */
             for (rlim_t fd2 = 0; fd2 < max_fds; fd2++) {
                 connection_t *conn = conns[fd2];
                 if (conn == NULL) continue;
+
+                if (conn->is_sse) {
+                    if (conn->wsent < conn->wlen) continue; /* still draining a previous frame */
+                    if (metrics_len < 0) metrics_len = metrics_format_json(metrics_json, sizeof(metrics_json));
+                    if (metrics_len <= 0) continue;
+                    conn_io_result_t r =
+                        connection_sse_push(conn, &cfg, metrics_json, (size_t)metrics_len);
+                    if (r == CONN_IO_AGAIN) {
+                        if (event_loop_mod(loop, (int)fd2, EPOLLOUT) < 0) {
+                            drop_connection(loop, conns, (int)fd2);
+                        }
+                    } else if (r != CONN_IO_SSE_ACTIVE) {
+                        drop_connection(loop, conns, (int)fd2);
+                    }
+                    continue;
+                }
+
                 if (now - conn->last_active >= cfg.idle_timeout_sec) {
                     if (verbose) fprintf(stderr, "[conn] timeout  fd=%d\n", (int)fd2);
                     drop_connection(loop, conns, (int)fd2);

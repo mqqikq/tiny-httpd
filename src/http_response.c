@@ -53,3 +53,22 @@ int http_build_error_body(char *out, size_t out_size, int status_code) {
     }
     return n;
 }
+
+int http_build_sse_headers(char *out, size_t out_size) {
+    char date_buf[64];
+    format_http_date(date_buf, sizeof(date_buf));
+
+    int n = snprintf(out, out_size,
+                      "HTTP/1.1 200 OK\r\n"
+                      "Date: %s\r\n"
+                      "Server: " SERVER_NAME "\r\n"
+                      "Content-Type: text/event-stream\r\n"
+                      "Cache-Control: no-cache\r\n"
+                      "Connection: keep-alive\r\n"
+                      "\r\n",
+                      date_buf);
+    if (n < 0 || (size_t)n >= out_size) {
+        return -1;
+    }
+    return n;
+}
