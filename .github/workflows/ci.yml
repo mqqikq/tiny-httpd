@@ -31,3 +31,16 @@ jobs:
 
       - name: valgrind (memory + fd leak check, incl. keep-alive and idle timeout)
         run: bash tests/valgrind_check.sh
+
+      - name: Docker image builds and serves
+        run: |
+          docker build -t tiny-httpd:ci .
+          docker run -d --rm --name tiny-httpd-ci -p 18080:8080 tiny-httpd:ci -p 8080
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:18080/ -o /dev/null && break
+            sleep 0.5
+          done
+          curl -sf http://127.0.0.1:18080/ -o /dev/null
+          curl -sf http://127.0.0.1:18080/metrics -o /dev/null
+          curl -sf http://127.0.0.1:18080/dashboard -o /dev/null
+          docker stop tiny-httpd-ci

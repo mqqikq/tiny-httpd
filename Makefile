@@ -28,8 +28,11 @@ asan: CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 asan: LDFLAGS += -fsanitize=address,undefined
 asan: clean all
 
-demo: all
+demo-local: all
 	./$(BIN) -p 8080 -r www -v
+
+demo:
+	docker compose up --build
 
 unit-test:
 	$(MAKE) -C tests unit

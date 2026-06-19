@@ -1,0 +1,6 @@
+services:
+  httpd:
+    build: .
+    ports:
+      - "8080:8080"
+    command: ["-p", "8080", "-w", "2", "-v"]

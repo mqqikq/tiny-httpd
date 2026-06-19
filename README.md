@@ -7,11 +7,12 @@ A static-file HTTP/1.1 server written from scratch in C. No libevent, no
 libuv, no third-party HTTP library — just POSIX sockets, hand-rolled request
 parsing, and an `epoll` event loop driving non-blocking I/O.
 
-> **Status: Week 2.** Non-blocking sockets, a single-threaded `epoll` event
-> loop, HTTP keep-alive, `sendfile()` zero-copy file streaming, idle-connection
-> timeouts, `SO_REUSEPORT` multi-worker processes, and an access log. Week 1's
-> blocking baseline is preserved in git history; week 3 (`/metrics`, Docker,
-> `wrk` benchmarks) is next — see the [roadmap](#roadmap).
+> **Status: Week 3.** Non-blocking `epoll` event loop, HTTP keep-alive,
+> `sendfile()` zero-copy file streaming, idle-connection timeouts,
+> `SO_REUSEPORT` multi-worker processes, an access log, a live `/dashboard`
+> fed over Server-Sent Events, one-command Docker deployment, and `wrk`
+> benchmarks. Weeks 1–2's blocking and single-threaded baselines are
+> preserved in git history — see the [roadmap](#roadmap).
 
 ## Why this exists
 
@@ -48,8 +49,17 @@ easy to get wrong (partial reads/writes, percent-encoding, symlink escapes,
 - **`SO_REUSEPORT` multi-worker processes** (`-w N`) — N independent
   processes each bind the same port; the kernel load-balances connections
   across them, with a supervisor process forwarding graceful shutdown
-- **Access log** (combined-log-ish, to stdout) for every completed request:
-  client IP, request line, status, response size
+- **Access log** (combined-log-ish, to stdout, line-buffered so it shows up
+  live under `docker logs`) for every completed request: client IP, request
+  line, status, response size
+- **Live `/dashboard`** — active connections, total requests, req/s, and
+  bytes sent, updating in real time over `GET /metrics/stream` (Server-Sent
+  Events), plus a "Generate load" button that fires 200 concurrent requests
+  at the server so the concurrency is visible, not just claimed. A plain
+  JSON snapshot is also available at `GET /metrics`
+- **One-command Docker deployment** — `make demo` builds a multi-stage image
+  (compiled in `gcc:13`, run from `debian-slim` as a non-root user) and
+  starts it via `docker-compose.yml` with the demo site already baked in
 - Graceful shutdown on `SIGINT`/`SIGTERM` — single-worker or multi-worker,
   no orphaned sockets or zombie processes
 - Clean under `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`,
@@ -58,6 +68,16 @@ easy to get wrong (partial reads/writes, percent-encoding, symlink escapes,
   connections — see [CI](.github/workflows/ci.yml))
 
 ## Quick start
+
+The fastest way to see it running — Docker handles the Linux requirement
+even on Mac/Windows:
+
+```bash
+make demo               # docker compose up --build
+open http://localhost:8080/dashboard
+```
+
+To build and run natively instead:
 
 ```bash
 # Linux or WSL -- epoll, accept4, and SO_REUSEPORT are Linux-only
@@ -142,6 +162,34 @@ runs N of these loops in independent processes, each with its own socket
 bound via `SO_REUSEPORT`; the kernel hands each new TCP connection to one
 of them.
 
+## Benchmarks
+
+```
+wrk -t<threads> -c<connections> -d15s http://127.0.0.1:8080/
+```
+
+run via the `williamyeh/wrk` Docker image against the containerized server,
+both on `--network host` (Docker Desktop / WSL2, Windows host, 16 logical
+CPUs visible to Docker):
+
+| Workers (`-w`) | Connections | Requests/sec | Avg latency |
+|---|---|---|---|
+| 1 | 100  | 1,910 | 44.0 ms |
+| 4 | 100  | 2,257 | 44.1 ms |
+| 1 | 400  | 8,490 | 46.8 ms |
+| 8 | 400  | 8,816 | 45.1 ms |
+
+Two honest caveats, in the interest of not overselling a number: these
+figures measure the whole containerized stack on a Windows/WSL2 dev
+machine — Docker Desktop's network virtualization adds latency a bare-metal
+Linux deployment wouldn't have, so treat the relative comparison (more
+connections → much higher throughput; more workers → modest extra headroom)
+as the takeaway rather than the absolute req/s as a hardware ceiling. And at
+both concurrency levels tested here, a *single* worker already kept up with
+the client — the `-w` win shows up once one process's single CPU core
+becomes the bottleneck, which 100–400 connections serving small static
+files doesn't reach on a 16-core box.
+
 ## Architecture
 
 | File | Responsibility |
@@ -149,11 +197,12 @@ of them.
 | `src/main.c` | CLI args, signal handling, the `epoll_wait` dispatch loop, `-w` multi-worker fork/supervise |
 | `src/event_loop.c` | thin `epoll` wrapper: create, add/mod/del fd interest, wait |
 | `src/server.c` | listening socket setup (`socket`/`bind`/`listen`, `SO_REUSEADDR`, `SO_REUSEPORT`) |
-| `src/connection.c` | per-connection state machine: non-blocking read → parse → build response → non-blocking write/`sendfile` → keep-alive or close; access log |
+| `src/connection.c` | per-connection state machine: non-blocking read → parse → build response → non-blocking write/`sendfile`/SSE push → keep-alive or close; access log |
 | `src/http_parser.c` | request-line + header parsing, no body handling |
 | `src/files.c` | percent-decoding + symlink-safe path resolution |
 | `src/http_response.c` | pure header/body formatting (no I/O — the connection state machine owns all reads/writes) |
 | `src/mime.c` | extension → `Content-Type` lookup table |
+| `src/metrics.c` | process-wide counters (`/metrics`, `/metrics/stream`) — no locking, since each worker process owns its counters exclusively |
 
 ## Known limitations
 
@@ -165,6 +214,11 @@ of them.
   serves static files in response to `GET`/`HEAD`, so it never needs to read
   one.
 - IPv4 only.
+- `/metrics` and `/metrics/stream` reflect only the worker process that
+  handled the request. With `-w 1` (the default) that's the whole picture;
+  with `-w N > 1`, `SO_REUSEPORT` spreads connections — and therefore
+  counters — across N independent processes with no shared aggregation, so
+  point the dashboard at a single-worker instance to see a coherent number.
 
 ## Roadmap
 
@@ -173,9 +227,9 @@ of them.
 - [x] **Week 2** — `epoll` event loop + non-blocking I/O, keep-alive,
       `sendfile()` zero-copy, idle timeouts, `SO_REUSEPORT` multi-worker
       processes, access log
-- [ ] **Week 3** — `/metrics` + live `/dashboard` (SSE), Docker one-command
-      demo, `wrk` benchmark table, demo GIF
-- [ ] Stretch — range requests, gzip, mini reverse-proxy
+- [x] **Week 3** — `/metrics` + live `/dashboard` (SSE) with a load
+      generator, Docker one-command demo, `wrk` benchmark table
+- [ ] Stretch — range requests, gzip, mini reverse-proxy, demo GIF
 
 ## License
 
