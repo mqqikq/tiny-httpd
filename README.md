@@ -7,12 +7,12 @@ A static-file HTTP/1.1 server written from scratch in C. No libevent, no
 libuv, no third-party HTTP library — just POSIX sockets, hand-rolled request
 parsing, and an `epoll` event loop driving non-blocking I/O.
 
-> **Status: Week 3.** Non-blocking `epoll` event loop, HTTP keep-alive,
-> `sendfile()` zero-copy file streaming, idle-connection timeouts,
-> `SO_REUSEPORT` multi-worker processes, an access log, a live `/dashboard`
-> fed over Server-Sent Events, one-command Docker deployment, and `wrk`
-> benchmarks. Weeks 1–2's blocking and single-threaded baselines are
-> preserved in git history — see the [roadmap](#roadmap).
+> **Status: feature-complete.** Non-blocking `epoll` event loop, HTTP
+> keep-alive, `sendfile()` zero-copy file streaming, idle-connection
+> timeouts, `SO_REUSEPORT` multi-worker processes, an access log, a live
+> `/dashboard` fed over Server-Sent Events, one-command Docker deployment,
+> and a `wrk` benchmark table — all covered by CI (build, unit + integration
+> tests, ASan/UBSan, valgrind, a Docker smoke test).
 
 ## Why this exists
 
@@ -220,16 +220,11 @@ files doesn't reach on a 16-core box.
   counters — across N independent processes with no shared aggregation, so
   point the dashboard at a single-worker instance to see a coherent number.
 
-## Roadmap
+## Possible extensions
 
-- [x] **Week 1** — blocking sockets, parser, static files, MIME, path-traversal
-      hardening, HEAD, `index.html`, unit + integration tests, CI
-- [x] **Week 2** — `epoll` event loop + non-blocking I/O, keep-alive,
-      `sendfile()` zero-copy, idle timeouts, `SO_REUSEPORT` multi-worker
-      processes, access log
-- [x] **Week 3** — `/metrics` + live `/dashboard` (SSE) with a load
-      generator, Docker one-command demo, `wrk` benchmark table
-- [ ] Stretch — range requests, gzip, mini reverse-proxy, demo GIF
+Not needed for the project to be complete, just ideas if it grows further:
+range requests (partial content / resumable downloads), gzip, a minimal
+reverse-proxy mode, a recorded demo GIF for the README.
 
 ## License
 
