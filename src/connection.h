@@ -42,7 +42,9 @@ typedef struct connection {
     int is_head;
     int is_sse;              /* GET /metrics/stream: long-lived, pushed by the sweep tick */
 
-    time_t last_active;     /* for idle-timeout sweeps (ignored while is_sse) */
+    time_t last_active;     /* for idle-timeout sweeps -- a healthy is_sse
+                              * connection refreshes this every push, so the
+                              * same sweep doubles as a dead-peer reaper */
 } connection_t;
 
 typedef enum {

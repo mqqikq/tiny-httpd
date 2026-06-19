@@ -219,20 +219,32 @@ static int run_worker(int port, const char *doc_root, int verbose, int idle_time
                 connection_t *conn = conns[fd2];
                 if (conn == NULL) continue;
 
-                if (conn->is_sse) {
-                    if (conn->wsent < conn->wlen) continue; /* still draining a previous frame */
+                /* SSE connections are exempt from the *protocol* idle-timeout
+                 * meaning ("client went quiet") -- a healthy one is never
+                 * quiet, it gets a frame every tick. But they still need the
+                 * same safety net: connection_on_writable() refreshes
+                 * last_active on every successful write, so as long as
+                 * pushes keep landing, last_active never goes stale and the
+                 * timeout below never fires. If a peer vanishes without
+                 * closing (kernel send buffer fills, no ACKs), pushes start
+                 * failing/blocking, last_active stops refreshing, and this
+                 * same check reclaims it after idle_timeout_sec like any
+                 * other dead connection -- instead of leaking it forever. */
+                if (conn->is_sse && conn->wsent == conn->wlen) {
                     if (metrics_len < 0) metrics_len = metrics_format_json(metrics_json, sizeof(metrics_json));
-                    if (metrics_len <= 0) continue;
-                    conn_io_result_t r =
-                        connection_sse_push(conn, &cfg, metrics_json, (size_t)metrics_len);
-                    if (r == CONN_IO_AGAIN) {
-                        if (event_loop_mod(loop, (int)fd2, EPOLLOUT) < 0) {
+                    if (metrics_len > 0) {
+                        conn_io_result_t r =
+                            connection_sse_push(conn, &cfg, metrics_json, (size_t)metrics_len);
+                        if (r == CONN_IO_AGAIN) {
+                            if (event_loop_mod(loop, (int)fd2, EPOLLOUT) < 0) {
+                                drop_connection(loop, conns, (int)fd2);
+                                continue;
+                            }
+                        } else if (r != CONN_IO_SSE_ACTIVE) {
                             drop_connection(loop, conns, (int)fd2);
+                            continue;
                         }
-                    } else if (r != CONN_IO_SSE_ACTIVE) {
-                        drop_connection(loop, conns, (int)fd2);
                     }
-                    continue;
                 }
 
                 if (now - conn->last_active >= cfg.idle_timeout_sec) {
